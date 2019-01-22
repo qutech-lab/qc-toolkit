@@ -187,7 +187,7 @@ class TektronixProgram:
         self._sequencing_elements = None
         self._waveforms = None
 
-        make_compatible(program, 250, 1, sample_rate / 10**9)
+        make_compatible(self._program, 250, 1, sample_rate / 10**9)
         self._program.flatten_and_balance(1)
 
         self._sequencing_elements, self._waveforms = parse_program(program=self._program,
@@ -527,9 +527,12 @@ class TektronixAWG(AWG):
 
         # group markers in by channels
         markers = tuple(zip(markers[0::2], markers[1::2]))
+        
+        p_to_p_ampl = self.device.get_amplitude()
+        p_ampl = [ampl / 2 for ampl in p_to_p_ampl]
 
         tek_program = TektronixProgram(program, channels=channels, markers=markers,
-                                       amplitudes=self.device.get_amplitude(),
+                                       amplitudes=p_ampl,
                                        voltage_transformations=voltage_transformation,
                                        sample_rate=TimeType(self.sample_rate))
 
@@ -583,7 +586,7 @@ class TektronixAWG(AWG):
                 for name, (_, positions, _) in self._programs.items()}
 
     def arm(self, name: Optional[str]):
-        _, positions, _ = self._programs[name]
+        positions, _, _ = self._programs[name]
         self._armed_program = (name, positions[0])
 
     def run_current_program(self):

@@ -277,6 +277,9 @@ class Loop(Node):
             else:
                 # we land in this case if the function gets called with depth == 0 and the current subprogram is a leaf
                 i += 1
+        
+        while self.depth() < depth:
+            self.encapsulate()
 
     def remove_empty_loops(self):
         new_children = []
