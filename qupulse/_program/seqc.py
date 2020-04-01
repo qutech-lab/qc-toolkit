@@ -545,19 +545,40 @@ class HDAWGProgramManager:
     PROGRAM_FUNCTION_NAME_TEMPLATE = '{program_name}_function'
     INIT_PROGRAM_SWITCH = '// INIT program switch.\nvar prog_sel = 0;'
     WAIT_FOR_SOFTWARE_TRIGGER = "waitForSoftwareTrigger();"
-    SOFTWARE_WAIT_FOR_TRIGGER_FUNCTION_DEFINITION = (
+    SOFTWARE_WAIT_FOR_TRIGGER_FUNCTION_TEMPLATE = (
         'void waitForSoftwareTrigger() {\n'
         '  while (true) {\n'
         '    var trigger_register = getUserReg(TRIGGER_REGISTER);\n'
         '    if (trigger_register & TRIGGER_RESET_MASK) setUserReg(TRIGGER_REGISTER, 0);\n'
-        '    if (trigger_register) return;\n'
+        '    if (trigger_register) {\n'
+        '      // trigger received\n'
+        '      return;\n'
+        '    } else {\n'
+        '      // waiting for trigger\n'
+        '    }\n'
         '  }\n'
-        '}\n'
+        '}'
+    )
+
+    #: int: Value is guessed and not optimized. see :py:func:`.loop_to_seqc`
+    min_repetitions_for_for_loop = 20
+
+    #: int: Value is guessed and not optimized. see :py:func:`.loop_to_seqc`
+    min_repetitions_for_shared_wf = 1000
+
+    TRACK_PROGRAM_CONSTS = dict(
+        PROGRAM_STATE_REGISTER=UserRegister(zero_based_value=15),
+        ENUM_INIT=0,
+        ENUM_WAIT_FOR_PROGRAM_SELECTION=1,
+        ENUM_WAIT_FOR_SOFTWARE_TRIGGER=2,
+        ENUM_PROGRAM_IS_RUNNING=3,
+        ENUM_FINISHED=4
     )
 
     def __init__(self):
         self._waveform_memory = WaveformMemory()
         self._programs = OrderedDict()  # type: MutableMapping[str, HDAWGProgramEntry]
+        self._track_program_state = True
 
     @property
     def waveform_memory(self):
@@ -568,6 +589,30 @@ class HDAWGProgramManager:
         for idx in itertools.count():
             if idx not in existing and idx != self.GLOBAL_CONSTS['PROG_SEL_NONE']:
                 return idx
+
+    @property
+    def _available_registers(self) -> Sequence[UserRegister]:
+        if self._track_program_state:
+            available_registers = range(2, 15)
+        else:
+            available_registers = range(2, 16)
+        return [UserRegister.from_seqc(idx) for idx in available_registers]
+
+    def _software_wait_for_trigger_function_definition(self) -> str:
+        if self._track_program_state:
+            replacements = {
+                '// trigger received':    'setUserReg(PROGRAM_STATE_REGISTER, ENUM_PROGRAM_IS_RUNNING);',
+                '// waiting for trigger': 'setUserReg(PROGRAM_STATE_REGISTER, ENUM_WAIT_FOR_SOFTWARE_TRIGGER);'}
+            return replace_multiple(self.SOFTWARE_WAIT_FOR_TRIGGER_FUNCTION_TEMPLATE, replacements)
+        else:
+            return self.SOFTWARE_WAIT_FOR_TRIGGER_FUNCTION_TEMPLATE
+
+    def _compile(self, name):
+        self._programs[name].compile(min_repetitions_for_for_loop=self.min_repetitions_for_for_loop,
+                                     min_repetitions_for_shared_wf=self.min_repetitions_for_shared_wf,
+                                     indentation='  ',
+                                     trigger_wait_code=self.WAIT_FOR_SOFTWARE_TRIGGER,
+                                     available_registers=self._available_registers)
 
     def add_program(self, name: str, loop: Loop,
                     channels: Tuple[Optional[ChannelID], Optional[ChannelID]],
@@ -594,17 +639,15 @@ class HDAWGProgramManager:
 
         selection_index = self._get_low_unused_index()
 
-        # TODO: verify total number of registers
-        available_registers = [UserRegister.from_seqc(idx) for idx in range(2, 16)]
-
         program_entry = HDAWGProgramEntry(loop, selection_index, self._waveform_memory, name,
                                           channels, markers, amplitudes, offsets, voltage_transformations, sample_rate)
 
-        # TODO: de-hardcode these parameters and put compilation in seperate function
-        program_entry.compile(20, 1000, '  ', self.WAIT_FOR_SOFTWARE_TRIGGER,
-                              available_registers=available_registers)
-
         self._programs[name] = program_entry
+        try:
+            self._compile(name)
+        except Exception:
+            self._programs.pop(name)
+            raise
 
     def get_register_values(self, name: str) -> Mapping[UserRegister, int]:
         return {register: int(parameter)
@@ -654,10 +697,21 @@ class HDAWGProgramManager:
                 const_repr = const_val.to_seqc()
             lines.append('const {const_name} = {const_repr};'.format(const_name=const_name, const_repr=const_repr))
 
+        if self._track_program_state:
+            lines.append('\n// constants for program state tracking (only included if tracking is enabled)')
+
+            for const_name, const_val in self.TRACK_PROGRAM_CONSTS.items():
+                if isinstance(const_val, (int, str)):
+                    const_repr = str(const_val)
+                else:
+                    const_repr = const_val.to_seqc()
+                lines.append('const {const_name} = {const_repr};'.format(const_name=const_name, const_repr=const_repr))
+            lines.append('')
+
         lines.append(self._waveform_memory.waveform_declaration())
 
         lines.append('\n//function used by manually triggered programs')
-        lines.append(self.SOFTWARE_WAIT_FOR_TRIGGER_FUNCTION_DEFINITION)
+        lines.append(self._software_wait_for_trigger_function_definition())
 
         replacements = self._waveform_memory.waveform_name_replacements()
 
@@ -687,8 +741,12 @@ class HDAWGProgramManager:
 
         lines.append('    default:')
         lines.append('      wait(IDLE_WAIT_CYCLES);')
+        if self._track_program_state:
+            lines.append('      setUserReg(PROGRAM_STATE_REGISTER, ENUM_WAIT_FOR_PROGRAM_SELECTION);')
         lines.append('  }')
         lines.append('}')
+        if self._track_program_state:
+            lines.append('setUserReg(PROGRAM_STATE_REGISTER, ENUM_FINISHED);')
 
         return '\n'.join(lines)
 
