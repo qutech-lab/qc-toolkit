@@ -538,6 +538,7 @@ class TaborProgramManagement(ProgramManagement):
         self._parent = weakref.ref(channel_tuple)
 
         self._idle_sequence_table = [(1, 1, 0), (1, 1, 0), (1, 1, 0)]
+        self._trigger_source = 'BUS'
 
     def get_runmode(self, program_name: str) -> str:
         """
@@ -581,7 +582,7 @@ class TaborProgramManagement(ProgramManagement):
 
         if len(channels) != len(self._parent().channels):
             raise ValueError("Wrong number of channels")
-        if len(markers) != len(self._parent().marker):
+        if len(markers) != len(self._parent().marker_channels):
             raise ValueError("Wrong number of marker")
         if len(voltage_transformation) != len(self._parent().channels):
             raise ValueError("Wrong number of voltage transformations")
@@ -714,7 +715,7 @@ class TaborProgramManagement(ProgramManagement):
         Throws:
             RuntimeError: This exception is thrown if there is no active program for this device
         """
-        if (self._parent().device()._is_coupled()):
+        if (self._parent().device._is_coupled()):
             raise NotImplementedError
 
         else:
@@ -726,8 +727,6 @@ class TaborProgramManagement(ProgramManagement):
                     self._parent().device.send_cmd(':TRIG', paranoia_level=self._parent().internal_paranoia_level)
                 elif repetition_mode is "once":
                     self._trig_runmode()
-                    self._parent().device.send_cmd(':INIT:CONT OFF;',
-                                                   paranoia_level=self._parent().internal_paranoia_level)
                     self._parent().device.send_cmd(':TRIG', paranoia_level=self._parent().internal_paranoia_level)
                 else:
                     raise ValueError("{} is no vaild repetition mode".format(repetition_mode))
@@ -810,12 +809,12 @@ class TaborProgramManagement(ProgramManagement):
     @with_select
     def _cont_runmode(self):
         """Changes the run mode of this channel tuple to continous mode"""
-        self._parent().device.send_cmd(":INIT:CONT ON; :INIT:CONT:ENAB ARM; :INIT:CONT:ENAB:SOUR BUS")
+        self._parent().device.send_cmd(f":INIT:CONT ON; :INIT:CONT:ENAB ARM; :INIT:CONT:ENAB:SOUR {self._trigger_source}")
 
     @with_select
     def _trig_runmode(self):
         """Changes the run mode of this channel tuple to triggered mode"""
-        self._parent().device.send_cmd(":INIT:CONT 0")
+        self._parent().device.send_cmd(":INIT:CONT 0; :TRIG:SOUR:ADV BUS")
 
 
 class TaborVolatileParameters(VolatileParameters):
